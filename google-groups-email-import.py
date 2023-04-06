@@ -1,4 +1,12 @@
 #!/usr/bin/env python
+"""
+This script imports email messages stored in the mbox format into a Google
+Group's archive. Run with the --help flag for details.
+
+This script implements parallel insertions. Officially Google Groups Migration
+API doesn't support parallel insertions. Empirically, sometimes it works, other
+times it doesn't work.
+"""
 import argparse
 import logging
 import mailbox
@@ -12,12 +20,16 @@ from multiprocessing import Process, Queue
 from pathlib import Path
 from time import time, sleep, perf_counter
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)-23s %(levelname)s %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)-23s %(levelname)s %(message)s")
+
+
+class WorkingDirectoryNotEmpty(Exception):
+    pass
 
 
 class Timer:
+    """Context manager to measure execution time"""
+
     def __enter__(self):
         self.start = perf_counter()
         return self
@@ -32,12 +44,8 @@ class Timer:
         return self.elapsed.__format__(fmt)
 
 
-class WorkingDirectoryNotEmpty(Exception):
-    pass
-
-
 class RateLimiter:
-    """Helper to rate-limit request"""
+    """Helper to rate-limit requests"""
 
     def __init__(self, max_rate, interval):
         """Set class parameters"""
@@ -58,18 +66,34 @@ class RateLimiter:
         self.hist.append(time())
 
     def current_rate(self):
+        """Report current rate"""
         return len(self.hist) / self.interval
 
 
 def worker(work_q, feedback_q, ready_q, backoff_q, group, creds, delegator):
+    """Read file names of an rfc822 email message from "work_q", attempt to
+    insert them into Google group "group", and report result via "feedback_q".
+    Repeat until None is read from "work_q".
+
+    work_q and feedback_q are used for input and output with the manager process.
+
+    ready_q and backoff_q are used for scheduling by the manager process.
+
+    Args:
+        work_q (Queue): source of file names of messages to insert (read-only).
+        feedback_q (Queue): report whether insertion was successful (write-only).
+        ready_q (Queue): indicate we are waiting to read from work_q (read-write).
+        backoff_q (Queue): indicate we are retrying an insert (read-write).
+        group (str): name of the group where to insert messages.
+        creds (str): file name of JSON with service account credentials.
+        delegator (str): email address of account to impersonate.
+    """
     credentials = service_account.Credentials.from_service_account_file(
         creds,
         scopes=["https://www.googleapis.com/auth/apps.groups.migration"],
         subject=delegator,
     )
-    service = discovery.build(
-        "groupsmigration", "v1", credentials=credentials, cache_discovery=False
-    )
+    service = discovery.build("groupsmigration", "v1", credentials=credentials, cache_discovery=False)
     archive = service.archive()
     pid = os.getpid()
 
@@ -83,6 +107,10 @@ def worker(work_q, feedback_q, ready_q, backoff_q, group, creds, delegator):
             req = archive.insert(groupId=group, media_body=msg_file, media_mime_type="message/rfc822")
         except MediaUploadSizeError:
             logging.info(f"{pid} {msg_file} is bigger than maximum allowed size")
+            feedback_q.put((False, msg_file))
+            continue
+        except Exception as e:
+            logging.info(f"{pid} caught exception while creating request {repr(e)}")
             feedback_q.put((False, msg_file))
             continue
 
@@ -101,12 +129,12 @@ def worker(work_q, feedback_q, ready_q, backoff_q, group, creds, delegator):
                 else:
                     perform_retry = False
                     import_success = False
-            except:
-                logging.info(f"{pid} caught exception {repr(e)}")
+            except Exception as e:
+                logging.info(f"{pid} caught exception while executing request {repr(e)}")
                 perform_retry = False
                 import_success = False
             else:
-                if res['responseCode'] == 'SUCCESS':
+                if res["responseCode"] == "SUCCESS":
                     logging.info(f"{pid} inserted {msg_file} in {timer:.2f}s {num_retries} retries")
                     perform_retry = False
                     import_success = True
@@ -114,7 +142,7 @@ def worker(work_q, feedback_q, ready_q, backoff_q, group, creds, delegator):
                     logging.info(f"{pid} failed to insert {msg_file} {res}")
                     perform_retry = True
                     import_success = False
-            
+
             if perform_retry:
                 num_retries += 1
                 if num_retries == 1:
@@ -134,6 +162,7 @@ def worker(work_q, feedback_q, ready_q, backoff_q, group, creds, delegator):
 
 
 def unpack_mbox(mbox_path, workdir_path):
+    """Save all messages in mbox mailbox under mbox_path as separate file in workdir_path"""
     workdir = Path(workdir_path)
     workdir.mkdir(exist_ok=True)
     if list(workdir.iterdir()):
@@ -170,7 +199,7 @@ def main():
         "--sa-delegator",
         metavar="EMAIL",
         required=True,
-        help="the principal on whose behalf the\n        service account will act²",
+        help="the principal whome the service account\n        will impersonate²",
     )
     parser.add_argument(
         "--src-mbox",
@@ -197,7 +226,9 @@ def main():
     )
     args = parser.parse_args()
 
-    if not args.resume:
+    if args.resume:
+        logging.info("ignoring --src-mbox because --resume is specified")
+    else:
         try:
             unpack_mbox(args.src_mbox, args.work_dir)
         except WorkingDirectoryNotEmpty:
@@ -212,20 +243,19 @@ def main():
     ready_q = Queue()  # qlen is the number of workers ready and waiting for work
     backoff_q = Queue()  # qlen is the number of workers retransmitting and backing off
 
-    NUM_PROCS = 10
+    NUM_PROCS = 10  # Sometimes the API blocks parallel insertions
     args1 = (work_q, feedback_q, ready_q, backoff_q)
     args2 = (args.dst_group, args.sa_creds, args.sa_delegator)
     procs = [Process(target=worker, args=args1 + args2) for i in range(NUM_PROCS)]
     [p.start() for p in procs]
 
-    MAX_REQ_RATE = 10
+    MAX_REQ_RATE = 10  # Officially Google Group Migration API calls are limited to 10/s
     ratelimiter = RateLimiter(MAX_REQ_RATE, 1)
     while True:
         if msg_files and ready_q.qsize() and work_q.empty() and backoff_q.empty():
             ratelimiter.wait_for_clearance()
             ratelimiter.register()
             work_q.put(str(msg_files.pop(0)))
-            # logging.info(f"current rate: {ratelimiter.current_rate()}")
         while feedback_q.qsize():
             success, done_msg_file = feedback_q.get()
             if success:
@@ -237,32 +267,6 @@ def main():
 
     [work_q.put(None) for p in procs]
     [p.join() for p in procs]
-
-#    credentials = service_account.Credentials.from_service_account_file(
-#        args.sa_creds,
-#        scopes=["https://www.googleapis.com/auth/apps.groups.migration"],
-#        subject=args.sa_delegator,
-#    )
-#    service = discovery.build(
-#        "groupsmigration", "v1", credentials=credentials, cache_discovery=False
-#    )
-#    archive = service.archive()
-#
-#    for fn in msg_files:
-#        req = archive.insert(
-#            groupId=args.dst_group,
-#            media_body=fn,
-#            media_mime_type="message/rfc822",
-#        )
-#        t0 = time()
-#        try:
-#            res = req.execute()
-#        except:
-#            print('hello')
-#        logging.info(
-#           f"{os.getpid()}: Request executed in {round(time() - t0, 2)}s "
-#        )
-#    return
 
 
 if __name__ == "__main__":

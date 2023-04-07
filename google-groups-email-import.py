@@ -20,8 +20,6 @@ from multiprocessing import Process, Queue
 from pathlib import Path
 from time import time, sleep, perf_counter
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)-23s %(levelname)s %(message)s")
-
 
 class WorkingDirectoryNotEmpty(Exception):
     pass
@@ -135,7 +133,7 @@ def worker(work_q, feedback_q, ready_q, backoff_q, group, creds, delegator):
                 import_success = False
             else:
                 if res["responseCode"] == "SUCCESS":
-                    logging.info(f"{pid} inserted {msg_file} in {timer:.2f}s {num_retries} retries")
+                    logging.debug(f"{pid} inserted {msg_file} in {timer:.2f}s {num_retries} retries")
                     perform_retry = False
                     import_success = True
                 else:
@@ -224,7 +222,18 @@ def main():
         action="store_true",
         help="resume using previously unpacked mailbox",
     )
+    parser.add_argument(
+        "--log-level",
+        default="info",
+        choices=("debug", "info", "warning", "error"),
+        help="logging level (default: info)",
+    )
     args = parser.parse_args()
+
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper()),
+        format="%(asctime)-23s %(levelname)s %(message)s",
+    )
 
     if args.resume:
         logging.info("ignoring --src-mbox because --resume is specified")

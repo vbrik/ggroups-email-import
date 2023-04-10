@@ -8,7 +8,9 @@ and [Google Auth Oauthlib](https://github.com/googleapis/google-auth-library-pyt
 
 ```
 $ ./google-groups-email-import.py -h
-usage: google-groups-email-import.py [-h] --sa-creds PATH --sa-delegator EMAIL --src-mbox PATH --dst-group EMAIL [--work-dir PATH] [--resume]
+usage: google-groups-email-import.py [-h] --sa-creds PATH --sa-delegator EMAIL 
+                                     --src-mbox PATH --dst-group EMAIL [--work-dir PATH]
+                                     [--resume] [--num-workers NUM] 
                                      [--log-level {debug,info,warning,error}]
 
 google-groups-email-import.py is a utility to import email messagges from a mailbox
@@ -23,13 +25,15 @@ options:
   --dst-group EMAIL     destination group ID
   --work-dir PATH       storage for unpacked mailbox (default: ./workdir)
   --resume              resume using previously unpacked mailbox
+  --num-workers NUM     number of workers³ (default: 1)
   --log-level {debug,info,warning,error}
                         logging level (default: info)
 
 Notes:
 [1] The service account needs to be set up for domain-wide delegation.
 [2] The delegator account needs to have a Google Workspace admin role.
+[3] Officially, parallel insertions are not supported. However, sometimes
+    using multiple workers results in significant peformance improvement.
 
 Also note that importing the same message (same Message-ID) multiple
 times will not result in duplicates.
-```

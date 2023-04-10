@@ -182,6 +182,8 @@ def main():
             "Notes:\n"
             "[1] The service account needs to be set up for domain-wide delegation.\n"
             "[2] The delegator account needs to have a Google Workspace admin role.\n"
+            "[3] Officially, parallel insertions are not supported. However, sometimes\n"
+            "    using multiple workers results in significant peformance improvement.\n"
             "\nAlso note that importing the same message (same Message-ID) multiple\n"
             "times will not result in duplicates."
         ),
@@ -223,6 +225,13 @@ def main():
         help="resume using previously unpacked mailbox",
     )
     parser.add_argument(
+        "--num-workers",
+        metavar="NUM",
+        default=1,
+        type=int,
+        help="number of workers³ (default: 1)",
+    )
+    parser.add_argument(
         "--log-level",
         default="info",
         choices=("debug", "info", "warning", "error"),
@@ -252,10 +261,9 @@ def main():
     ready_q = Queue()  # qlen is the number of workers ready and waiting for work
     backoff_q = Queue()  # qlen is the number of workers retransmitting and backing off
 
-    NUM_PROCS = 10  # Sometimes the API blocks parallel insertions
     args1 = (work_q, feedback_q, ready_q, backoff_q)
     args2 = (args.dst_group, args.sa_creds, args.sa_delegator)
-    procs = [Process(target=worker, args=args1 + args2) for i in range(NUM_PROCS)]
+    procs = [Process(target=worker, args=args1 + args2) for i in range(args.num_workers)]
     [p.start() for p in procs]
 
     MAX_REQ_RATE = 10  # Officially Google Group Migration API calls are limited to 10/s

@@ -199,7 +199,7 @@ def main():
         "--sa-delegator",
         metavar="EMAIL",
         required=True,
-        help="the principal whome the service account\n        will impersonate²",
+        help="the principal whom the service account\n        will impersonate²",
     )
     parser.add_argument(
         "--src-mbox",

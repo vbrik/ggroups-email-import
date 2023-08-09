@@ -1,3 +1,5 @@
+Moved to <https://github.com/WIPACrepo/wipac-mailman-migration>
+
 # google-groups-email-import
 
 This script imports email messages from an mbox Mailbox into Google Groups
